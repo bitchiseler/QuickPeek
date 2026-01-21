@@ -27,6 +27,12 @@ struct ContentView: View {
     @State private var allFilesIndex: Int = 0
     @State private var savedDirectory: String?
     
+    // 읽기 방향 UI 표시용 상태
+    @State private var showDirectionInfo: Bool = false
+    @State private var directionIconName: String = ""
+    
+    // 지원하는 이미지 파일 형식
+    
     // 지원하는 이미지 파일 형식
     private let supportedImageTypes: [UTType] = [
         .jpeg, .png, .gif, .bmp
@@ -151,6 +157,26 @@ struct ContentView: View {
                     }
                 }
             }
+            
+            
+            // 읽기 방향 정보 표시 (화살표 아이콘)
+            if showDirectionInfo {
+                VStack {
+                    Spacer()
+                    Image(systemName: directionIconName)
+                        .font(.system(size: 60))
+                        .foregroundColor(.white)
+                        .padding(30)
+                        .background(Color.black.opacity(0.7))
+                        .clipShape(Circle())
+                        .padding(.bottom, 50)
+                }
+                .onAppear {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                        self.showDirectionInfo = false
+                    }
+                }
+            }
         }
         .onAppear {
             setupKeyHandlers()
@@ -182,8 +208,22 @@ struct ContentView: View {
     private func processSelectedURL(_ url: URL) {
         if url.hasDirectoryPath {
             let dirURL = url
-            if dirURL.startAccessingSecurityScopedResource() {
+            
+            // 북마크 확인
+            if let bookmarkedURL = PermissionManager.shared.resolveBookmark(for: dirURL.path) {
+                // 이미 권한이 있는 경우
+                defer { bookmarkedURL.stopAccessingSecurityScopedResource() }
+                savedDirectory = bookmarkedURL.path
+                createAllFilesListFromDirectory(bookmarkedURL.path)
+                updateZipFilesList(in: bookmarkedURL.path)
+                if let first = allFilesList.first {
+                    loadFile(at: first)
+                }
+            } else if dirURL.startAccessingSecurityScopedResource() {
+                // 새로운 권한 획득 및 저장
                 defer { dirURL.stopAccessingSecurityScopedResource() }
+                PermissionManager.shared.saveBookmark(for: dirURL)
+                
                 savedDirectory = dirURL.path
                 createAllFilesListFromDirectory(dirURL.path)
                 updateZipFilesList(in: dirURL.path)
@@ -200,8 +240,19 @@ struct ContentView: View {
             // 파일 선택 플로우 (기존과 동일)
             loadFile(at: url.path)
             let dirURL = url.deletingLastPathComponent()
-            if dirURL.startAccessingSecurityScopedResource() {
+            
+            // 북마크 확인
+            if let bookmarkedURL = PermissionManager.shared.resolveBookmark(for: dirURL.path) {
+                defer { bookmarkedURL.stopAccessingSecurityScopedResource() }
+                savedDirectory = bookmarkedURL.path
+                createAllFilesListFromDirectory(bookmarkedURL.path)
+                if url.pathExtension.lowercased() == "zip" {
+                    updateZipFilesList(in: bookmarkedURL.path)
+                }
+            } else if dirURL.startAccessingSecurityScopedResource() {
                 defer { dirURL.stopAccessingSecurityScopedResource() }
+                PermissionManager.shared.saveBookmark(for: dirURL)
+                
                 savedDirectory = dirURL.path
                 createAllFilesListFromDirectory(dirURL.path)
                 if url.pathExtension.lowercased() == "zip" {
@@ -319,8 +370,24 @@ struct ContentView: View {
                             self.loadFile(at: url.path)
                             
                             let dirURL = url.hasDirectoryPath ? url : url.deletingLastPathComponent()
-                            if dirURL.startAccessingSecurityScopedResource() {
+                            
+                            // 북마크 확인
+                            if let bookmarkedURL = PermissionManager.shared.resolveBookmark(for: dirURL.path) {
+                                defer { bookmarkedURL.stopAccessingSecurityScopedResource() }
+                                self.savedDirectory = bookmarkedURL.path
+                                self.createAllFilesListFromDirectory(bookmarkedURL.path)
+                                if url.pathExtension.lowercased() == "zip" {
+                                    self.updateZipFilesList(in: bookmarkedURL.path)
+                                }
+                                if url.hasDirectoryPath {
+                                    if let first = self.allFilesList.first {
+                                        self.loadFile(at: first)
+                                    }
+                                }
+                            } else if dirURL.startAccessingSecurityScopedResource() {
                                 defer { dirURL.stopAccessingSecurityScopedResource() }
+                                PermissionManager.shared.saveBookmark(for: dirURL)
+                                
                                 self.savedDirectory = dirURL.path
                                 self.createAllFilesListFromDirectory(dirURL.path)
                                 if url.pathExtension.lowercased() == "zip" {
@@ -371,17 +438,42 @@ struct ContentView: View {
                 case "~", "`": // 파일 정보
                     showFileInfo.toggle()
                     return nil
+                case "d", "D", "ㅇ": // 읽기 방향 전환
+                    // ZipManager의 상태를 변경
+                    self.zipManager.isRightToLeft.toggle()
+                    
+                    // UI 업데이트 (메인 스레드 보장)
+                    DispatchQueue.main.async {
+                        self.directionIconName = self.zipManager.isRightToLeft ? "arrow.left" : "arrow.right"
+                        self.showDirectionInfo = true
+                    }
+                    return nil
                 default:
                     break
                 }
             }
             
             // 키 코드 처리 (방향키, 스페이스바)
+            // 주의: 클로저 내에서 self.zipManager를 참조하여 최신 상태를 가져옴
             switch event.keyCode {
-                case 123, 126: // 왼쪽, 위쪽 방향키
+                case 123: // 왼쪽 방향키
+                    if self.zipManager.isRightToLeft {
+                        nextImage()
+                    } else {
+                        previousImage()
+                    }
+                    return nil
+                case 124: // 오른쪽 방향키
+                    if self.zipManager.isRightToLeft {
+                        previousImage()
+                    } else {
+                        nextImage()
+                    }
+                    return nil
+                case 126: // 위쪽 방향키
                     previousImage()
                     return nil
-                case 124, 125, 49: // 오른쪽, 아래쪽 방향키, 스페이스바
+                case 125, 49: // 아래쪽 방향키, 스페이스바
                     nextImage()
                     return nil
                 default:

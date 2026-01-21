@@ -12,6 +12,7 @@ import ZIPFoundation
 class ZipManager: ObservableObject {
     @Published var imagesInZip: [String] = []
     @Published var currentZipPath: String?
+    @Published var isRightToLeft: Bool = false
     
     private let supportedImageExtensions = ["jpg", "jpeg", "png", "gif", "bmp", "webp"]
     
